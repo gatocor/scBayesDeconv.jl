@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>1D distributions · scBayesDeconv.jl</title><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.045/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.13.24/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../index.html">scBayesDeconv.jl</a></span></div><form class="docs-search" action="../search.html"><input class="docs-search-query" id="documenter-search-query" name="q" type="text" placeholder="Search docs"/></form><ul class="docs-menu"><li><a class="tocitem" href="../index.html">Usage</a></li><li><span class="tocitem">Examples</span><ul><li><a class="tocitem" href="Artificial Convolutions.html">Distribution 1</a></li><li><a class="tocitem" href="Comparison with FFT deconvolution.html">-</a></li><li><a class="tocitem" href="Real data artificial convolution.html">-</a></li><li><a class="tocitem" href="Real data iterated deconvolution.html">-</a></li></ul></li><li><a class="tocitem" href="../API.html">API</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href="mixtureFitting.html">1D distributions</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href="mixtureFitting.html">1D distributions</a></li></ul></nav><div class="docs-right"><a class="docs-edit-link" href="https://github.com/gatocor/scBayesDeconv.jl/blob/master/docs/src/examples/mixtureFitting.md" title="Edit on GitHub"><span class="docs-icon fab"></span><span class="docs-label is-hidden-touch">Edit on GitHub</span></a><a class="docs-settings-button fas fa-cog" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-sidebar-button fa fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a></div></header><article class="content" id="documenter-page"><pre><code class="language-julia hljs">using scBayesDeconv 
+using Distributions
+using Random
+using Plots
+import scBayesDeconv</code></pre><pre><code class="nohighlight hljs">┌ Info: Precompiling scBayesDeconv [ba4b0364-d62a-4552-92b1-eb0a52360a94]
+└ @ Base loading.jl:1342</code></pre><h1 id="D-distributions"><a class="docs-heading-anchor" href="#D-distributions">1D distributions</a><a id="D-distributions-1"></a><a class="docs-heading-anchor-permalink" href="#D-distributions" title="Permalink"></a></h1><pre><code class="language-julia hljs"># Generate data
+d = Dict()
+
+d[&quot;Gaussian&quot;] = Normal(0,1)
+d[&quot;Gamma&quot;] = Gamma(3,2) 
+d[&quot;Lognormal&quot;] = LogNormal(1.5,.5)
+d[&quot;Cauchy&quot;] = Cauchy(0,1)</code></pre><pre><code class="nohighlight hljs">Cauchy{Float64}(μ=0.0, σ=1.0)</code></pre><pre><code class="language-julia hljs">l = []
+for i in keys(d)
+    if i in [&quot;Gaussian&quot;,&quot;Cauchy&quot;]
+        x = range(-10,10,step=.1)
+    else
+        x = range(0,20,step=.1)
+    end
+    y = pdf.(d[i],x)
+    push!(l,plot(x,y,title=i))
+end
+
+plot(l...)</code></pre><p><img src="mixtureFitting_files/mixtureFitting_3_0.svg" alt="svg"/></p><pre><code class="language-julia hljs">N = 1000
+
+samples = Dict()
+for i in keys(d)
+    x = reshape(rand(d[i],N),N,1)
+    samples[i] = copy(x)
+end</code></pre><pre><code class="language-julia hljs">function fastMCD(X,p = ceil(Int,(sum(size(X))+1)/2);nrepeats=500)
+    rng = 0
+    hMin = nothing
+    sMin = Inf
+  
+    for i in 1:nrepeats
+        idx = randperm(size(X,1))
+        h1 = X[idx[1:p],:]    
+        s0 = 0
+        s1= 1
+        while ((det(s1)!=det(s0)) &amp; (det(s1)!=0))
+            h0 = h1
+            s0 = cov(h0)
+            m = vec(mean(h0,dims=2))
+            Dis = vec(mapslices(x -&gt; mahalanobis(x,m,inv(s0)),X,2))
+            ord = sortperm(Dis)
+            h1 = X[ord[1:p],:]
+            s1=cov(h1)
+       end
+       
+        if det(s1)&lt;det(sMin)
+            hMin = h1
+            sMin = s1
+        end
+       
+    end
+    ## Reweighting
+    sfull = cov(hMin)
+    tmcd = vec(mean(hMin,1))
+    dfull = vec(mapslices(x -&gt; mahalanobis(x,tmcd,inv(sfull)),hMin,2))
+    smcd = (median(dfull.^2)/pdf(Chisq(size(X,2)),0.5))*sfull
+    dmcd = vec(mapslices(x -&gt; mahalanobis(x,tmcd,inv(smcd)),hMin,2));
+    w = FrequencyWeights(((dmcd.^2).&lt;pdf(Chisq(size(X,2)),0.975))*1)
+    t1 = mean(hMin,w,1)
+    s1 = cov(hMin,w,corrected=true)
+    (t1,s1)
+end</code></pre><pre><code class="nohighlight hljs">fastMCD (generic function with 2 methods)</code></pre><pre><code class="language-julia hljs">l = []
+for i in keys(d)
+    if i in [&quot;Gaussian&quot;,&quot;Cauchy&quot;]
+        x = range(-10,10,step=.1)
+    else
+        x = range(0,20,step=.1)
+    end
+    y = rand(d[i],1000)
+    push!(l,histogram(y,normalize=true,title=i))
+end
+
+plot(l...)</code></pre><p><img src="mixtureFitting_files/mixtureFitting_6_0.svg" alt="svg"/></p><pre><code class="language-julia hljs">fit = Dict()
+for i in keys(d)
+    dist = infiniteGaussianMixture(samples[i])
+    fit[i] = deepcopy(dist)
+end</code></pre><pre><code class="language-julia hljs">l = []
+for i in keys(d)
+    if i in [&quot;Gaussian&quot;,&quot;Cauchy&quot;]
+        x = range(-10,10,step=.1)
+    else
+        x = range(-1,20,step=.1)
+    end
+    y = pdf.(d[i],x)
+    p1 = plot(x,y,label=&quot;original&quot;,linewidth=2)
+
+    for k in 2:1:100
+        y = ([pdf(fit[i].samples[k],[j]) for j in x])
+        plot!(p1,x,y,style=:dash,label=nothing)
+    end
+
+    f1(x) = pdf(d[i],x[1])
+    miae = []
+    for k in 2:1:100
+        f2(x) = pdf(fit[i].samples[k],x)
+        push!(miae, scBayesDeconv.metrics.MIAE(f1,f2,[-100. 100.],.1))
+    end
+
+    push!(l,plot(p1,title=string(i,&quot; MIAE:&quot;,round(mean(miae),digits=3))))
+end
+
+plot(l...)</code></pre><p><img src="mixtureFitting_files/mixtureFitting_8_0.svg" alt="svg"/></p><h2 id="Tuning-the-hyperparameters"><a class="docs-heading-anchor" href="#Tuning-the-hyperparameters">Tuning the hyperparameters</a><a id="Tuning-the-hyperparameters-1"></a><a class="docs-heading-anchor-permalink" href="#Tuning-the-hyperparameters" title="Permalink"></a></h2><p>In the case of the Cauchy distribution, the fat tails of the distribution lead to an estimation of the hyperparameter <span>$\Sigma_0$</span> that makes the probability very broad and dominate the expression. In such a situation, a smaller variance could be helpful.</p><pre><code class="language-julia hljs">dist = infiniteGaussianMixture(samples[&quot;Cauchy&quot;],Σ0=.5*ones(1,1))
+fit[&quot;Cauchy&quot;] = deepcopy(dist);</code></pre><pre><code class="language-julia hljs">l = []
+for i in keys(d)
+    
+    if i in [&quot;Gaussian&quot;,&quot;Cauchy&quot;]
+        x = range(-10,10,step=.1)
+    else
+        x = range(-1,20,step=.1)
+    end
+    y = pdf.(d[i],x)
+    p1 = plot(x,y,label=&quot;original&quot;,linewidth=2)
+
+    for k in 2:1:100
+        y = ([pdf(fit[i].samples[k],[j]) for j in x])
+        plot!(p1,x,y,style=:dash,label=nothing)
+    end
+
+    f1(x) = pdf(d[i],x[1])
+    miae = []
+    for k in 2:1:100
+        f2(x) = pdf(fit[i].samples[k],x)
+        push!(miae, scBayesDeconv.metrics.MIAE(f1,f2,[-100. 100.],.1))
+    end
+
+    push!(l,plot(p1,title=string(i,&quot; MIAE:&quot;,round(mean(miae),digits=3))))
+end
+
+plot(l...)</code></pre><p><img src="mixtureFitting_files/mixtureFitting_11_0.svg" alt="svg"/></p><h1 id="Higher-dimensional-distributions"><a class="docs-heading-anchor" href="#Higher-dimensional-distributions">Higher dimensional distributions</a><a id="Higher-dimensional-distributions-1"></a><a class="docs-heading-anchor-permalink" href="#Higher-dimensional-distributions" title="Permalink"></a></h1><pre><code class="language-julia hljs"># Generate data
+d = Dict()
+
+d[&quot;Gaussian&quot;] = MixtureModel(
+                    MultivariateNormal[
+                        MultivariateNormal([0; 0.],[1 .5;.5 2]),
+                        MultivariateNormal([0; 3.],[1 .5;.5 1]),
+                        MultivariateNormal([7; 0.],[1 .1;.1 1]),
+                        MultivariateNormal([4; 10.],[2 -.5;-.5 1])
+                                    ],
+                    [.2,.1,.3,.4]
+                    )
+            
+d[&quot;Gamma&quot;] = MixtureModel([
+                            product_distribution([Gamma(3,2),Gamma(2,3)]),
+                            product_distribution([Gamma(5,1),Gamma(7,7)]),
+                            product_distribution([Gamma(10,1.5),Gamma(10,7)]),
+                        ]
+    )</code></pre><pre><code class="nohighlight hljs">MixtureModel{Product{Continuous, Gamma{Float64}, Vector{Gamma{Float64}}}}(K = 3)
+components[1] (prior = 0.3333): Product{Continuous, Gamma{Float64}, Vector{Gamma{Float64}}}(v=Gamma{Float64}[Gamma{Float64}(α=3.0, θ=2.0), Gamma{Float64}(α=2.0, θ=3.0)])
+components[2] (prior = 0.3333): Product{Continuous, Gamma{Float64}, Vector{Gamma{Float64}}}(v=Gamma{Float64}[Gamma{Float64}(α=5.0, θ=1.0), Gamma{Float64}(α=7.0, θ=7.0)])
+components[3] (prior = 0.3333): Product{Continuous, Gamma{Float64}, Vector{Gamma{Float64}}}(v=Gamma{Float64}[Gamma{Float64}(α=10.0, θ=1.5), Gamma{Float64}(α=10.0, θ=7.0)])</code></pre><pre><code class="language-julia hljs">N = 1000
+
+samples = Dict()
+for i in keys(d)
+    x = transpose(rand(d[i],N))
+    samples[i] = copy(x)
+end</code></pre><pre><code class="language-julia hljs">l = []
+for i in keys(d)
+    y = samples[i]
+    push!(l,scatter(y[:,1],y[:,2],normalize=true,title=i,markersize=2))
+end
+
+plot(l...)</code></pre><p><img src="mixtureFitting_files/mixtureFitting_15_0.svg" alt="svg"/></p><pre><code class="language-julia hljs">fit = Dict()
+for i in keys(d)
+    dist = infiniteGaussianMixture(samples[i],α=1,ignoreSteps=1000)
+    fit[i] = deepcopy(dist)
+end</code></pre><pre><code class="language-julia hljs">N = 1000
+
+l = []
+for i in keys(d)
+    
+    y = rand(fit[i].samples[2],N)
+    p1 = scatter(y[1,:],y[2,:],normalize=true,title=i,markersize=2)
+
+    f1(x) = pdf(d[i],x)
+    miae = []
+    for k in 2:10:100
+        f2(x) = pdf(fit[i].samples[k],x)
+        push!(miae, scBayesDeconv.metrics.MIAE(f1,f2,[-20. 150.;-20. 30.],.5))
+    end
+
+    plot!(p1,title=string(i,&quot; MIAE:&quot;,round(mean(miae),digits=3)))
+
+    push!(l,p1)
+    
+end
+
+plot(l...)</code></pre><p><img src="mixtureFitting_files/mixtureFitting_17_0.svg" alt="svg"/></p><pre><code class="language-julia hljs"></code></pre></article><nav class="docs-footer"><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.23 on <span class="colophon-date" title="Tuesday 3 January 2023 17:12">Tuesday 3 January 2023</span>. Using Julia version 1.6.7.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
